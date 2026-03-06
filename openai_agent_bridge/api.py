@@ -55,6 +55,7 @@ def _get_chatkit_domain_key() -> str | None:
 		or frappe.conf.get("openai_agent_chatkit_domain_key")
 		or os.environ.get("OPENAI_CHATKIT_DOMAIN_KEY")
 		or os.environ.get("OPENAI_AGENT_CHATKIT_DOMAIN_KEY")
+		or "domain_pk_69ab0f58e25881938658c48e368ec0500a2c5f59ab572a55"
 	)
 
 
