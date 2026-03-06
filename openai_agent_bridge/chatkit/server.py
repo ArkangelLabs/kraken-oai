@@ -57,6 +57,9 @@ def _get_user_api_auth_headers(user: str) -> dict[str, str]:
 		updated = True
 	if updated:
 		user_doc.save(ignore_permissions=True)
+		# The MCP request is made immediately after provisioning credentials.
+		# Commit first so the downstream authenticated request can see them.
+		frappe.db.commit()
 
 	api_secret = user_doc.get_password("api_secret", raise_exception=False)
 	if not user_doc.api_key or not api_secret:
