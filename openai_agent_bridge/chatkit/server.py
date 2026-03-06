@@ -21,6 +21,23 @@ from werkzeug.wrappers import Response
 from .store import FrappeChatKitStore
 
 
+_original_chatkit_logger_exception = chatkit_server.logger.exception
+
+
+def _frappe_chatkit_logger_exception(*args, **kwargs):
+	try:
+		frappe.log_error(
+			title="OpenAI Agent ChatKit Internal Error",
+			message=frappe.get_traceback(),
+		)
+	except Exception:
+		pass
+	return _original_chatkit_logger_exception(*args, **kwargs)
+
+
+chatkit_server.logger.exception = _frappe_chatkit_logger_exception
+
+
 @contextmanager
 def _safe_agents_sdk_user_agent_override():
 	ua = f"Agents/Python {agents.__version__} ChatKit/Python"
