@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import frappe
@@ -52,6 +53,8 @@ def _get_chatkit_domain_key() -> str | None:
 	return (
 		frappe.conf.get("openai_chatkit_domain_key")
 		or frappe.conf.get("openai_agent_chatkit_domain_key")
+		or os.environ.get("OPENAI_CHATKIT_DOMAIN_KEY")
+		or os.environ.get("OPENAI_AGENT_CHATKIT_DOMAIN_KEY")
 	)
 
 
