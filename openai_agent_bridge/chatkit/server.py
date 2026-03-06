@@ -14,7 +14,7 @@ from agents import Agent, OpenAIProvider, RunConfig, Runner
 from agents.mcp import MCPServerSse, MCPServerStreamableHttp
 from chatkit.agents import AgentContext, simple_to_agent_input, stream_agent_response
 import chatkit.server as chatkit_server
-from chatkit.server import ChatKitServer, NonStreamingResult
+from chatkit.server import ChatKitServer, CustomStreamError, NonStreamingResult
 from chatkit.types import Action, NoticeEvent, SyncCustomActionResponse, ThreadMetadata, UserMessageItem, WidgetItem
 from werkzeug.wrappers import Response
 
@@ -186,29 +186,29 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 		input_user_message: UserMessageItem | None,
 		context: dict[str, Any],
 	) -> AsyncIterator[Any]:
-		api_key = _get_openai_api_key()
-		if not api_key:
-			frappe.throw(
-				"Set openai_api_key in site_config.json or OPENAI_API_KEY in the backend environment."
+		try:
+			api_key = _get_openai_api_key()
+			if not api_key:
+				frappe.throw(
+					"Set openai_api_key in site_config.json or OPENAI_API_KEY in the backend environment."
+				)
+
+			agent_doc = frappe.get_doc("OpenAI Agent", context["agent"])
+			mcp_config = _get_effective_mcp_config(context["user"])
+			items_page = await self.store.load_thread_items(
+				thread.id, after=None, limit=200, order="asc", context=context
+			)
+			model_input = await simple_to_agent_input(items_page.data)
+			agent_context = AgentContext(thread=thread, store=self.store, request_context=context)
+			agent = self._build_agent(agent_doc, mcp_config)
+			run_config = RunConfig(
+				model_provider=OpenAIProvider(api_key=api_key, use_responses=True),
+				tracing_disabled=True,
+				workflow_name=agent_doc.agent_name,
+				group_id=thread.id,
 			)
 
-		agent_doc = frappe.get_doc("OpenAI Agent", context["agent"])
-		mcp_config = _get_effective_mcp_config(context["user"])
-		items_page = await self.store.load_thread_items(
-			thread.id, after=None, limit=200, order="asc", context=context
-		)
-		model_input = await simple_to_agent_input(items_page.data)
-		agent_context = AgentContext(thread=thread, store=self.store, request_context=context)
-		agent = self._build_agent(agent_doc, mcp_config)
-		run_config = RunConfig(
-			model_provider=OpenAIProvider(api_key=api_key, use_responses=True),
-			tracing_disabled=True,
-			workflow_name=agent_doc.agent_name,
-			group_id=thread.id,
-		)
-
-		mcp_servers = list(agent.mcp_servers)
-		try:
+			mcp_servers = list(agent.mcp_servers)
 			for server in mcp_servers:
 				await server.connect()
 
@@ -220,8 +220,16 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 			)
 			async for event in stream_agent_response(agent_context, result):
 				yield event
+		except CustomStreamError:
+			raise
+		except Exception as exc:
+			frappe.log_error(
+				title="OpenAI Agent ChatKit Stream Error",
+				message=frappe.get_traceback(),
+			)
+			raise CustomStreamError(f"{type(exc).__name__}: {exc}", allow_retry=True)
 		finally:
-			for server in reversed(mcp_servers):
+			for server in reversed(locals().get("mcp_servers", [])):
 				await server.cleanup()
 
 	async def action(
