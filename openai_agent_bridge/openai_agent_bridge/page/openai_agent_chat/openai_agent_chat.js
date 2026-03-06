@@ -1,5 +1,7 @@
 frappe.provide("openai_agent_bridge");
 
+const DEFAULT_CHATKIT_DOMAIN_KEY = "domain_pk_69ab0f58e25881938658c48e368ec0500a2c5f59ab572a55";
+
 frappe.pages["openai-agent-chat"].on_page_load = function (wrapper) {
 	new openai_agent_bridge.OpenAIAgentChatPage(wrapper);
 };
@@ -96,7 +98,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			}
 
 			this.agentName = agents[0].name;
-			this.chatkitDomainKey = agents[0].chatkit_domain_key || window.location.host;
+			this.chatkitDomainKey = agents[0].chatkit_domain_key || DEFAULT_CHATKIT_DOMAIN_KEY;
 			await this.mountChat(this.agentName);
 		} catch (error) {
 			this.showUnavailableState(__("Unable to load agents."));
@@ -125,7 +127,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			chatElement.setOptions({
 				api: {
 					url: "/api/method/openai_agent_bridge.api.chatkit",
-					domainKey: this.chatkitDomainKey || window.location.host,
+					domainKey: this.chatkitDomainKey || DEFAULT_CHATKIT_DOMAIN_KEY,
 					fetch: (input, init = {}) =>
 						window.fetch(input, {
 							...init,
