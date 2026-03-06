@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from dataclasses import dataclass
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import frappe
+from frappe.utils import get_url
 from agents import Agent, OpenAIProvider, RunConfig, Runner
 from agents.mcp import MCPServerSse, MCPServerStreamableHttp
 from chatkit.agents import AgentContext, simple_to_agent_input, stream_agent_response
@@ -20,7 +22,53 @@ def _get_openai_api_key() -> str | None:
 	return frappe.conf.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
 
 
+@dataclass
+class EffectiveMCPConfig:
+	url: str
+	transport: str
+	headers: dict[str, str]
+
+
+def _get_default_mcp_server_url() -> str:
+	configured_url = frappe.conf.get("openai_agent_mcp_server_url") or os.environ.get(
+		"OPENAI_AGENT_MCP_SERVER_URL"
+	)
+	if configured_url:
+		return configured_url
+	return get_url("/api/method/openai_agent_bridge.mcp.handle_mcp")
+
+
+def _get_default_mcp_transport() -> str:
+	return (
+		frappe.conf.get("openai_agent_mcp_transport")
+		or os.environ.get("OPENAI_AGENT_MCP_TRANSPORT")
+		or "Streamable HTTP"
+	)
+
+
+def _get_user_api_auth_headers(user: str) -> dict[str, str]:
+	user_doc = frappe.get_doc("User", user)
+	updated = False
+	if not user_doc.api_key:
+		user_doc.api_key = frappe.generate_hash(length=15)
+		updated = True
+	if not user_doc.get_password("api_secret", raise_exception=False):
+		user_doc.api_secret = frappe.generate_hash(length=15)
+		updated = True
+	if updated:
+		user_doc.save(ignore_permissions=True)
+
+	api_secret = user_doc.get_password("api_secret", raise_exception=False)
+	if not user_doc.api_key or not api_secret:
+		frappe.throw(f"Unable to provision API credentials for {user}.")
+
+	return {"Authorization": f"token {user_doc.api_key}:{api_secret}"}
+
+
 def _build_auth_headers(profile) -> dict[str, str]:
+	if getattr(profile, "use_user_api_credentials", 0):
+		return _get_user_api_auth_headers(profile.user)
+
 	auth_type = (profile.auth_type or "Token").strip()
 	if auth_type == "Bearer":
 		token = profile.get_password("bearer_token")
@@ -40,6 +88,26 @@ def _get_mcp_profile(user: str):
 	if not name:
 		return None
 	return frappe.get_doc("OpenAI Agent MCP Profile", name)
+
+
+def _get_effective_mcp_config(user: str) -> EffectiveMCPConfig | None:
+	profile = _get_mcp_profile(user)
+	if profile:
+		return EffectiveMCPConfig(
+			url=profile.mcp_server_url or _get_default_mcp_server_url(),
+			transport=profile.mcp_transport or _get_default_mcp_transport(),
+			headers=_build_auth_headers(profile),
+		)
+
+	default_url = _get_default_mcp_server_url()
+	if not default_url:
+		return None
+
+	return EffectiveMCPConfig(
+		url=default_url,
+		transport=_get_default_mcp_transport(),
+		headers=_get_user_api_auth_headers(user),
+	)
 
 
 def _iter_async(async_iterable: AsyncIterator[bytes]) -> Iterator[bytes]:
@@ -62,16 +130,16 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 	def __init__(self):
 		super().__init__(store=FrappeChatKitStore())
 
-	def _build_agent(self, agent_doc, profile) -> Agent[AgentContext[dict[str, Any]]]:
+	def _build_agent(self, agent_doc, mcp_config: EffectiveMCPConfig | None) -> Agent[AgentContext[dict[str, Any]]]:
 		mcp_servers = []
-		if profile:
+		if mcp_config:
 			params = {
-				"url": profile.mcp_server_url,
-				"headers": _build_auth_headers(profile),
+				"url": mcp_config.url,
+				"headers": mcp_config.headers,
 				"timeout": 30,
 				"sse_read_timeout": 300,
 			}
-			if profile.mcp_transport == "SSE":
+			if mcp_config.transport == "SSE":
 				mcp_servers = [MCPServerSse(params=params, require_approval="never")]
 			else:
 				mcp_servers = [MCPServerStreamableHttp(params=params, require_approval="never")]
@@ -96,13 +164,13 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 			)
 
 		agent_doc = frappe.get_doc("OpenAI Agent", context["agent"])
-		profile = _get_mcp_profile(context["user"])
+		mcp_config = _get_effective_mcp_config(context["user"])
 		items_page = await self.store.load_thread_items(
 			thread.id, after=None, limit=200, order="asc", context=context
 		)
 		model_input = await simple_to_agent_input(items_page.data)
 		agent_context = AgentContext(thread=thread, store=self.store, request_context=context)
-		agent = self._build_agent(agent_doc, profile)
+		agent = self._build_agent(agent_doc, mcp_config)
 		run_config = RunConfig(
 			model_provider=OpenAIProvider(api_key=api_key, use_responses=True),
 			tracing_disabled=True,

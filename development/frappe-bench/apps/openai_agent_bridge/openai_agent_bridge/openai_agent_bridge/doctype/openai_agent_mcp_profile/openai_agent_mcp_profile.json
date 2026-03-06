@@ -10,6 +10,7 @@
  "field_order": [
   "user",
   "enabled",
+  "use_user_api_credentials",
   "mcp_server_url",
   "mcp_transport",
   "auth_type",
@@ -33,10 +34,15 @@
    "label": "Enabled"
   },
   {
+   "default": "1",
+   "fieldname": "use_user_api_credentials",
+   "fieldtype": "Check",
+   "label": "Use User API Credentials"
+  },
+  {
    "fieldname": "mcp_server_url",
    "fieldtype": "Data",
-   "label": "MCP Server URL",
-   "reqd": 1
+   "label": "MCP Server URL"
   },
   {
    "default": "Streamable HTTP",
