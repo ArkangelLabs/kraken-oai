@@ -6,6 +6,9 @@ from frappe.model.document import Document
 
 class OpenAIAgentMCPProfile(Document):
 	def validate(self) -> None:
+		if self.use_user_api_credentials:
+			return
+
 		if self.auth_type == "Bearer":
 			if not self.get_password("bearer_token"):
 				frappe.throw("Bearer token is required when auth type is Bearer.")
