@@ -12,8 +12,6 @@ import frappe
 from frappe.utils import get_url
 from agents import Agent, OpenAIProvider, RunConfig, Runner
 from agents.mcp import MCPServerSse, MCPServerStreamableHttp
-from agents.models.openai_chatcompletions import _HEADERS_OVERRIDE as chat_completions_headers_override
-from agents.models.openai_responses import _HEADERS_OVERRIDE as responses_headers_override
 from chatkit import __version__ as chatkit_version
 from chatkit.agents import AgentContext, simple_to_agent_input, stream_agent_response
 import chatkit.server as chatkit_server
@@ -27,14 +25,14 @@ from .store import FrappeChatKitStore
 @contextmanager
 def _safe_agents_sdk_user_agent_override():
 	ua = f"Agents/Python {agents.__version__} ChatKit/Python {chatkit_version}"
-	chat_completions_token = chat_completions_headers_override.set({"User-Agent": ua})
-	responses_token = responses_headers_override.set({"User-Agent": ua})
+	chat_completions_token = chatkit_server.chat_completions_headers_override.set({"User-Agent": ua})
+	responses_token = chatkit_server.responses_headers_override.set({"User-Agent": ua})
 	try:
 		yield
 	finally:
 		for override, token in (
-			(chat_completions_headers_override, chat_completions_token),
-			(responses_headers_override, responses_token),
+			(chatkit_server.chat_completions_headers_override, chat_completions_token),
+			(chatkit_server.responses_headers_override, responses_token),
 		):
 			try:
 				override.reset(token)
