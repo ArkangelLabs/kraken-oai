@@ -12,7 +12,6 @@ import frappe
 from frappe.utils import get_url
 from agents import Agent, OpenAIProvider, RunConfig, Runner
 from agents.mcp import MCPServerSse, MCPServerStreamableHttp
-from chatkit import __version__ as chatkit_version
 from chatkit.agents import AgentContext, simple_to_agent_input, stream_agent_response
 import chatkit.server as chatkit_server
 from chatkit.server import ChatKitServer, NonStreamingResult
@@ -24,7 +23,7 @@ from .store import FrappeChatKitStore
 
 @contextmanager
 def _safe_agents_sdk_user_agent_override():
-	ua = f"Agents/Python {agents.__version__} ChatKit/Python {chatkit_version}"
+	ua = f"Agents/Python {agents.__version__} ChatKit/Python"
 	chat_completions_token = chatkit_server.chat_completions_headers_override.set({"User-Agent": ua})
 	responses_token = chatkit_server.responses_headers_override.set({"User-Agent": ua})
 	try:
