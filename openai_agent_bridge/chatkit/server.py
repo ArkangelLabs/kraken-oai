@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
 from collections.abc import AsyncIterator, Iterator
@@ -279,3 +280,81 @@ def build_chatkit_response(request_body: bytes, context: dict[str, Any]) -> Resp
 		"X-Accel-Buffering": "no",
 	}
 	return Response(_iter_async(result), mimetype="text/event-stream", headers=headers)
+
+
+async def debug_chatkit_probe(agent_name: str, user: str) -> dict[str, Any]:
+	api_key = _get_openai_api_key()
+	if not api_key:
+		raise ValueError("Missing openai_api_key / OPENAI_API_KEY.")
+
+	thread = ThreadMetadata(id="debug-probe-thread", created_at=frappe.utils.now_datetime())
+	context = {"user": user, "agent": agent_name}
+	agent_doc = frappe.get_doc("OpenAI Agent", agent_name)
+	mcp_config = _get_effective_mcp_config(user)
+	store = FrappeChatKitStore()
+	await store.save_thread(thread, context)
+	agent = FrappeChatKitServer()._build_agent(agent_doc, mcp_config)
+	run_config = RunConfig(
+		model_provider=OpenAIProvider(api_key=api_key, use_responses=True),
+		tracing_disabled=True,
+		workflow_name=agent_doc.agent_name,
+		group_id="debug-probe-thread",
+	)
+	mcp_servers = list(agent.mcp_servers)
+	try:
+		for server in mcp_servers:
+			await server.connect()
+
+		raw_result = Runner.run_streamed(
+			agent,
+			"Reply with the single word OK.",
+			context=AgentContext(thread=thread, store=store, request_context=context),
+			run_config=run_config,
+		)
+		raw_events = []
+		async for event in raw_result.stream_events():
+			event_type = getattr(event, "type", type(event).__name__)
+			entry = {"type": event_type}
+			if event_type == "raw_response_event":
+				entry["data_type"] = getattr(event.data, "type", type(event.data).__name__)
+			raw_events.append(entry)
+
+		converted_result = Runner.run_streamed(
+			agent,
+			"Reply with the single word OK.",
+			context=AgentContext(thread=thread, store=store, request_context=context),
+			run_config=run_config,
+		)
+		converted_events = []
+		converted_context = AgentContext(thread=thread, store=store, request_context=context)
+		async for event in stream_agent_response(
+			converted_context,
+			converted_result,
+		):
+			converted_events.append({"type": getattr(event, "type", type(event).__name__)})
+			if len(converted_events) >= 20:
+				break
+
+		return {
+			"ok": True,
+			"raw_events": raw_events,
+			"converted_events": converted_events,
+			"mcp_url": mcp_config.url if mcp_config else None,
+			"mcp_transport": mcp_config.transport if mcp_config else None,
+		}
+	except Exception as exc:
+		return {
+			"ok": False,
+			"error_type": type(exc).__name__,
+			"error": str(exc),
+			"traceback": traceback.format_exc(),
+			"mcp_url": mcp_config.url if mcp_config else None,
+			"mcp_transport": mcp_config.transport if mcp_config else None,
+		}
+	finally:
+		for server in reversed(mcp_servers):
+			await server.cleanup()
+		try:
+			await store.delete_thread(thread.id, context)
+		except Exception:
+			pass

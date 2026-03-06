@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import frappe
 from frappe import _
 from werkzeug.wrappers import Response
 
-from openai_agent_bridge.chatkit import build_chatkit_response
+from openai_agent_bridge.chatkit import build_chatkit_response, debug_chatkit_probe
 
 
 def _is_system_manager(user: str) -> bool:
@@ -104,3 +105,15 @@ def chatkit() -> Response:
 		request_body=request_body,
 		context={"user": frappe.session.user, "agent": agent_doc.name},
 	)
+
+
+@frappe.whitelist()
+def debug_chatkit() -> dict[str, Any]:
+	if not _is_system_manager(frappe.session.user):
+		frappe.throw(_("Only System Managers can run ChatKit diagnostics."), frappe.PermissionError)
+
+	agent_name = _get_default_agent_name(frappe.session.user)
+	if not agent_name:
+		frappe.throw(_("No enabled OpenAI agent is assigned to your user."))
+
+	return asyncio.run(debug_chatkit_probe(agent_name, frappe.session.user))
