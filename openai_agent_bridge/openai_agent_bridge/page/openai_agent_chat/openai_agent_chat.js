@@ -138,6 +138,9 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 							},
 						}),
 				},
+				theme: {
+					radius: "soft",
+				},
 			});
 
 			this.currentAgent = agentName;
