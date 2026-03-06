@@ -9,6 +9,12 @@ development/*
 !development/installer.py
 !development/apps-example.json
 !development/vscode-example/
+!development/frappe-bench/
+development/frappe-bench/*
+!development/frappe-bench/apps/
+development/frappe-bench/apps/*
+!development/frappe-bench/apps/openai_agent_bridge/
+!development/frappe-bench/apps/openai_agent_bridge/**
 
 # Pycharm
 .idea

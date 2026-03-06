@@ -1,0 +1,67 @@
+{
+ "actions": [],
+ "allow_import": 0,
+ "allow_rename": 1,
+ "autoname": "field:item_id",
+ "creation": "2026-03-05 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "item_id",
+  "thread",
+  "item_type",
+  "created_at",
+  "payload_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "item_id",
+   "fieldtype": "Data",
+   "label": "Item ID",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "thread",
+   "fieldtype": "Link",
+   "label": "Thread",
+   "options": "OpenAI Chat Thread",
+   "reqd": 1
+  },
+  {
+   "fieldname": "item_type",
+   "fieldtype": "Data",
+   "label": "Item Type"
+  },
+  {
+   "fieldname": "created_at",
+   "fieldtype": "Datetime",
+   "label": "Created At"
+  },
+  {
+   "fieldname": "payload_json",
+   "fieldtype": "Long Text",
+   "label": "Payload JSON",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-03-05 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "OpenAI Agent Bridge",
+ "name": "OpenAI Chat Thread Item",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  }
+ ],
+ "quick_entry": 0,
+ "sort_field": "created_at",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "item_id"
+}
