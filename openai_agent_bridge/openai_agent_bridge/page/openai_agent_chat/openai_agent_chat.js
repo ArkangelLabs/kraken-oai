@@ -134,7 +134,6 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 							},
 						}),
 				},
-				theme: this.buildChatkitTheme(),
 			});
 
 			this.currentAgent = agentName;
@@ -146,37 +145,6 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			});
 			console.error(error);
 		}
-	}
-
-	getThemeValue(name, fallback) {
-		const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-		return value || fallback;
-	}
-
-	buildChatkitTheme() {
-		const isDarkMode = document.documentElement.getAttribute("data-theme-mode") === "dark";
-
-		return {
-			colorScheme: isDarkMode ? "dark" : "light",
-			radius: "soft",
-			density: "compact",
-			color: {
-				accent: {
-					primary: this.getThemeValue("--primary", "#2490ef"),
-				},
-				surface: {
-					background: this.getThemeValue("--bg-color", "#ffffff"),
-					foreground: this.getThemeValue("--text-color", "#1f272e"),
-				},
-				border: {
-					subtle: this.getThemeValue("--border-color", "#d1d8dd"),
-				},
-			},
-			typography: {
-				fontFamily: this.getThemeValue("--font-stack", "Inter, sans-serif"),
-				baseSize: 15,
-			},
-		};
 	}
 
 	async ensureChatkitScript() {
