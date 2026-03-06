@@ -10,6 +10,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 		this.chatkitScriptPromise = null;
 		this.currentAgent = null;
 		this.agentName = null;
+		this.chatkitDomainKey = null;
 		this.make();
 	}
 
@@ -95,6 +96,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			}
 
 			this.agentName = agents[0].name;
+			this.chatkitDomainKey = agents[0].chatkit_domain_key || window.location.host;
 			await this.mountChat(this.agentName);
 		} catch (error) {
 			this.showUnavailableState(__("Unable to load agents."));
@@ -123,7 +125,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			chatElement.setOptions({
 				api: {
 					url: "/api/method/openai_agent_bridge.api.chatkit",
-					domainKey: window.location.host,
+					domainKey: this.chatkitDomainKey || window.location.host,
 					fetch: (input, init = {}) =>
 						window.fetch(input, {
 							...init,

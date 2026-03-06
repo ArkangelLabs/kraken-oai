@@ -47,6 +47,13 @@ def _get_default_agent_name(user: str) -> str | None:
 	)
 
 
+def _get_chatkit_domain_key() -> str | None:
+	return (
+		frappe.conf.get("openai_chatkit_domain_key")
+		or frappe.conf.get("openai_agent_chatkit_domain_key")
+	)
+
+
 @frappe.whitelist()
 def get_available_agents() -> list[dict[str, Any]]:
 	if frappe.session.user == "Guest":
@@ -56,12 +63,19 @@ def get_available_agents() -> list[dict[str, Any]]:
 	if not allowed_names:
 		return []
 
-	return frappe.get_all(
+	agents = frappe.get_all(
 		"OpenAI Agent",
 		filters={"name": ["in", allowed_names], "enabled": 1},
 		fields=["name", "agent_name", "model", "workflow_id"],
 		order_by="agent_name asc",
 	)
+
+	domain_key = _get_chatkit_domain_key()
+	if domain_key:
+		for agent in agents:
+			agent["chatkit_domain_key"] = domain_key
+
+	return agents
 
 
 @frappe.whitelist(methods=["POST"])
