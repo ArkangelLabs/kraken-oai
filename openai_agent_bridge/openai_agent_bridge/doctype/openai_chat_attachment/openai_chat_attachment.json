@@ -1,0 +1,55 @@
+{
+ "actions": [],
+ "allow_import": 0,
+ "allow_rename": 1,
+ "autoname": "field:attachment_id",
+ "creation": "2026-03-05 00:00:00.000000",
+ "doctype": "DocType",
+ "document_type": "Document",
+ "engine": "InnoDB",
+ "field_order": [
+  "attachment_id",
+  "user",
+  "payload_json"
+ ],
+ "fields": [
+  {
+   "fieldname": "attachment_id",
+   "fieldtype": "Data",
+   "label": "Attachment ID",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "options": "User",
+   "reqd": 1
+  },
+  {
+   "fieldname": "payload_json",
+   "fieldtype": "Long Text",
+   "label": "Payload JSON",
+   "reqd": 1
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-03-05 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "OpenAI Agent Bridge",
+ "name": "OpenAI Chat Attachment",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "read": 1,
+   "role": "System Manager"
+  }
+ ],
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "attachment_id"
+}
