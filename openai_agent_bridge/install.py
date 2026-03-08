@@ -79,7 +79,7 @@ def ensure_workspace() -> None:
 	workspace.label = WORKSPACE_NAME
 	workspace.name = WORKSPACE_NAME
 	workspace.module = "OpenAI Agent Bridge"
-	workspace.icon = "chat"
+	workspace.icon = "bot"
 	workspace.public = 1
 	workspace.parent_page = ""
 	workspace.content = content
