@@ -147,6 +147,18 @@ def _split_lines(value: str | None) -> list[str]:
 	return [line.strip() for line in (value or "").splitlines() if line.strip()]
 
 
+def _get_shell_allowed_domains(agent_doc) -> list[str]:
+	configured = _split_lines(getattr(agent_doc, "shell_allowed_domains", None))
+	if configured:
+		return configured
+
+	parsed = urlparse(_get_api_base_url(agent_doc))
+	if parsed.hostname:
+		return [parsed.hostname]
+
+	return []
+
+
 def _build_runtime_instructions(agent_doc, user: str) -> str:
 	user_name = _get_user_display_name(user)
 	company_name = _get_company_name(user)
@@ -338,6 +350,13 @@ def _build_shell_tool(agent_doc, user: str) -> ShellTool:
 			"memory_limit": getattr(agent_doc, "shell_memory_limit", None) or "1g",
 			"skills": skills,
 		}
+		if getattr(agent_doc, "shell_network_enabled", 0):
+			allowed_domains = _get_shell_allowed_domains(agent_doc)
+			if allowed_domains:
+				environment["network_policy"] = {
+					"type": "allowlist",
+					"allowed_domains": allowed_domains,
+				}
 
 	return ShellTool(environment=environment)
 
