@@ -158,23 +158,16 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 
 		return {
 			colorScheme: isDarkMode ? "dark" : "light",
-			radius: "soft",
+			radius: "round",
 			density: "compact",
 			color: {
 				accent: {
 					primary: this.getThemeValue("--primary", "#2490ef"),
-				},
-				surface: {
-					background: this.getThemeValue("--bg-color", "#ffffff"),
-					foreground: this.getThemeValue("--text-color", "#1f272e"),
-				},
-				border: {
-					subtle: this.getThemeValue("--border-color", "#d1d8dd"),
+					level: 2,
 				},
 			},
 			typography: {
 				fontFamily: this.getThemeValue("--font-stack", "Inter, sans-serif"),
-				baseSize: 15,
 			},
 		};
 	}

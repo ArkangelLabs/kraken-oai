@@ -7,12 +7,24 @@ import frappe
 from werkzeug.wrappers import Response
 
 from .mcp_tools import (
+	check_doctype_exists,
+	check_document_exists,
+	count_documents,
+	find_doctypes,
 	get_document,
+	get_document_count,
 	get_doctype_schema,
+	get_doctypes_in_module,
 	get_field_options,
+	get_module_list,
+	get_naming_info,
+	get_report_meta,
 	get_report_columns,
+	get_required_fields,
 	list_documents,
 	list_reports,
+	ping,
+	run_doctype_report,
 	run_query_report,
 )
 
@@ -24,6 +36,64 @@ SERVER_VERSION = "0.1.0"
 
 def _tool_definitions() -> dict[str, dict[str, Any]]:
 	return {
+		"ping": {
+			"description": "Simple health check for the local MCP surface.",
+			"inputSchema": {"type": "object", "properties": {}},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": ping,
+		},
+		"check_doctype_exists": {
+			"description": "Check whether a DocType exists.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"doctype": {"type": "string"}},
+				"required": ["doctype"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": check_doctype_exists,
+		},
+		"check_document_exists": {
+			"description": "Check whether a document exists.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"doctype": {"type": "string"}, "name": {"type": "string"}},
+				"required": ["doctype", "name"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": check_document_exists,
+		},
+		"find_doctypes": {
+			"description": "Search available DocTypes.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"search_term": {"type": ["string", "null"]},
+					"module": {"type": ["string", "null"]},
+					"limit": {"type": "integer"},
+					"is_table": {"type": ["boolean", "null"]},
+					"is_single": {"type": ["boolean", "null"]},
+					"is_custom": {"type": ["boolean", "null"]},
+				},
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": find_doctypes,
+		},
+		"get_module_list": {
+			"description": "List modules visible to the current user.",
+			"inputSchema": {"type": "object", "properties": {}},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": get_module_list,
+		},
+		"get_doctypes_in_module": {
+			"description": "List DocTypes in a module.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"module": {"type": "string"}},
+				"required": ["module"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": get_doctypes_in_module,
+		},
 		"get_document": {
 			"description": "Read a single document that the current user can access.",
 			"inputSchema": {
@@ -54,6 +124,32 @@ def _tool_definitions() -> dict[str, dict[str, Any]]:
 			"annotations": {"readOnlyHint": True, "openWorldHint": False},
 			"fn": list_documents,
 		},
+		"count_documents": {
+			"description": "Count documents the current user can access.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"doctype": {"type": "string"},
+					"filters": {"type": ["object", "null"], "additionalProperties": {}},
+				},
+				"required": ["doctype"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": count_documents,
+		},
+		"get_document_count": {
+			"description": "Compatibility alias for document counts.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"doctype": {"type": "string"},
+					"filters": {"type": ["object", "null"], "additionalProperties": {}},
+				},
+				"required": ["doctype"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": get_document_count,
+		},
 		"get_doctype_schema": {
 			"description": "Return basic DocType metadata for read-only exploration.",
 			"inputSchema": {
@@ -63,6 +159,26 @@ def _tool_definitions() -> dict[str, dict[str, Any]]:
 			},
 			"annotations": {"readOnlyHint": True, "openWorldHint": False},
 			"fn": get_doctype_schema,
+		},
+		"get_required_fields": {
+			"description": "Return required fields for a DocType.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"doctype": {"type": "string"}},
+				"required": ["doctype"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": get_required_fields,
+		},
+		"get_naming_info": {
+			"description": "Describe the naming strategy for a DocType.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"doctype": {"type": "string"}},
+				"required": ["doctype"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": get_naming_info,
 		},
 		"get_field_options": {
 			"description": "Resolve Link or Select field options for the current user.",
@@ -98,6 +214,16 @@ def _tool_definitions() -> dict[str, dict[str, Any]]:
 			"annotations": {"readOnlyHint": True, "openWorldHint": False},
 			"fn": get_report_columns,
 		},
+		"get_report_meta": {
+			"description": "Describe a report and its columns.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {"report_name": {"type": "string"}},
+				"required": ["report_name"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": get_report_meta,
+		},
 		"run_query_report": {
 			"description": "Run a query report with filters and return a bounded result set.",
 			"inputSchema": {
@@ -111,6 +237,22 @@ def _tool_definitions() -> dict[str, dict[str, Any]]:
 			},
 			"annotations": {"readOnlyHint": True, "openWorldHint": False},
 			"fn": run_query_report,
+		},
+		"run_doctype_report": {
+			"description": "Run a simple doctype-backed listing query.",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"doctype": {"type": "string"},
+					"fields": {"type": ["array", "null"], "items": {"type": "string"}},
+					"filters": {"type": ["object", "null"], "additionalProperties": {}},
+					"limit": {"type": "integer"},
+					"order_by": {"type": ["string", "null"]},
+				},
+				"required": ["doctype"],
+			},
+			"annotations": {"readOnlyHint": True, "openWorldHint": False},
+			"fn": run_doctype_report,
 		},
 	}
 

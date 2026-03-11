@@ -1,22 +1,39 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import frappe
 
 
 ROLE_OPENAI_AGENT_USER = "OpenAI Agent User"
 WORKSPACE_NAME = "Riley Assistant"
+STANDARD_TARGETS = (
+	("Page", "openai-agent-chat", Path("openai_agent_bridge/page/openai_agent_chat/openai_agent_chat.json")),
+	("DocType", "OpenAI Agent", Path("openai_agent_bridge/doctype/openai_agent/openai_agent.json")),
+	(
+		"DocType",
+		"OpenAI Agent MCP Profile",
+		Path("openai_agent_bridge/doctype/openai_agent_mcp_profile/openai_agent_mcp_profile.json"),
+	),
+	(
+		"DocType",
+		"OpenAI Agent Access",
+		Path("openai_agent_bridge/doctype/openai_agent_access/openai_agent_access.json"),
+	),
+)
 
 
 def after_install() -> None:
 	ensure_role()
+	ensure_standard_targets(force=True)
 	ensure_page_title()
 	ensure_workspace()
 
 
 def after_migrate() -> None:
 	ensure_role()
+	ensure_standard_targets()
 	ensure_page_title()
 	ensure_workspace()
 
@@ -38,6 +55,16 @@ def ensure_page_title() -> None:
 	page = frappe.get_doc("Page", "openai-agent-chat")
 	page.title = WORKSPACE_NAME
 	page.save(ignore_permissions=True)
+
+
+def ensure_standard_targets(force: bool = False) -> None:
+	from frappe.modules.import_file import import_file_by_path
+
+	app_root = Path(__file__).resolve().parent
+
+	for doctype, docname, relative_path in STANDARD_TARGETS:
+		if force or not frappe.db.exists(doctype, docname):
+			import_file_by_path(str(app_root / relative_path), force=True)
 
 
 def ensure_workspace() -> None:
