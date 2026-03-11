@@ -4,12 +4,14 @@ import asyncio
 import base64
 import io
 import os
+import socket
 import traceback
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
+from urllib.parse import urlparse
 
 import agents
 import frappe
@@ -126,6 +128,21 @@ def _get_api_base_url(agent_doc) -> str:
 	return get_url().rstrip("/")
 
 
+def _get_shell_resolve_override(api_base_url: str) -> tuple[str, int, str] | None:
+	parsed = urlparse(api_base_url)
+	hostname = (parsed.hostname or "").strip()
+	if not hostname:
+		return None
+
+	port = parsed.port or (443 if parsed.scheme == "https" else 80)
+	try:
+		resolved_ip = socket.gethostbyname(hostname)
+	except OSError:
+		return None
+
+	return hostname, port, resolved_ip
+
+
 def _split_lines(value: str | None) -> list[str]:
 	return [line.strip() for line in (value or "").splitlines() if line.strip()]
 
@@ -182,6 +199,11 @@ def _build_shell_skill_bundle(agent_doc, user: str) -> dict[str, str]:
 	skill_name = "riley-frappe-api"
 	skill_description = "Hosted shell instructions for querying the active Frappe site."
 	api_base_url = _get_api_base_url(agent_doc)
+	resolve_override = _get_shell_resolve_override(api_base_url)
+	resolve_args = ""
+	if resolve_override:
+		resolve_host, resolve_port, resolve_ip = resolve_override
+		resolve_args = f"--resolve {resolve_host}:{resolve_port}:{resolve_ip}"
 	user_name = _get_user_display_name(user)
 	company_name = _get_company_name(user)
 	auth_headers = _get_shell_auth_headers(user)
@@ -214,19 +236,23 @@ Use shell with `curl` to inspect DocTypes and query data. Always answer from liv
 export FRAPPE_BASE_URL="{api_base_url}"
 export FRAPPE_AUTH='{auth_value}'
 export JSON_HEADER="Accept: application/json"
+export FRAPPE_CURL_RESOLVE='{resolve_args}'
 ```
+
+If `FRAPPE_CURL_RESOLVE` is set, include it in every `curl` command before the URL. This keeps the
+correct host header while bypassing DNS failures inside the hosted shell.
 
 ## Core API patterns
 
-curl -sS "$FRAPPE_BASE_URL/api/method/frappe.client.get_meta?doctype=Warranty%20Registration" \\
+curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/method/frappe.client.get_meta?doctype=Warranty%20Registration" \\
   -H "Authorization: $FRAPPE_AUTH" \\
   -H "$JSON_HEADER"
 
-curl -sS "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration?fields=%5B%22name%22,%22serial%22,%22brand%22,%22install_date%22,%22processing_status%22%5D&limit_page_length=5" \\
+curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration?fields=%5B%22name%22,%22serial%22,%22brand%22,%22install_date%22,%22processing_status%22%5D&limit_page_length=5" \\
   -H "Authorization: $FRAPPE_AUTH" \\
   -H "$JSON_HEADER"
 
-curl -sS --get "$FRAPPE_BASE_URL/api/method/frappe.client.get_count" \\
+curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/method/frappe.client.get_count" \\
   --data-urlencode "doctype=Warranty Registration" \\
   --data-urlencode 'filters={{"brand":"GE","processing_status":"Completed"}}' \\
   -H "Authorization: $FRAPPE_AUTH" \\
@@ -238,7 +264,7 @@ curl -sS --get "$FRAPPE_BASE_URL/api/method/frappe.client.get_count" \\
 Find candidate DocTypes:
 
 ```bash
-curl -sS "$FRAPPE_BASE_URL/api/method/frappe.desk.search.search_link?doctype=DocType&txt=Warranty&page_length=20" \\
+curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/method/frappe.desk.search.search_link?doctype=DocType&txt=Warranty&page_length=20" \\
   -H "Authorization: $FRAPPE_AUTH" \\
   -H "$JSON_HEADER"
 ```
@@ -246,7 +272,7 @@ curl -sS "$FRAPPE_BASE_URL/api/method/frappe.desk.search.search_link?doctype=Doc
 Find an exact serial:
 
 ```bash
-curl -sS --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
+curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
   --data-urlencode 'fields=["name","serial","brand","install_date","processing_status"]' \\
   --data-urlencode 'filters=[["Warranty Registration","serial","=","ZS003292C"]]' \\
   --data-urlencode 'limit_page_length=1' \\
@@ -257,7 +283,7 @@ curl -sS --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
 Find the closest serial by prefix when the user explicitly asks:
 
 ```bash
-curl -sS --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
+curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
   --data-urlencode 'fields=["name","serial","brand","install_date","processing_status"]' \\
   --data-urlencode 'filters=[["Warranty Registration","serial","like","ZS003292%"]]' \\
   --data-urlencode 'order_by=serial asc' \\
