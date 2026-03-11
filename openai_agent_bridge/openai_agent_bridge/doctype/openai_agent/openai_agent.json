@@ -11,6 +11,13 @@
   "agent_name",
   "workflow_id",
   "model",
+  "enable_shell",
+  "api_base_url_override",
+  "shell_container_id",
+  "shell_memory_limit",
+  "shell_network_enabled",
+  "shell_allowed_domains",
+  "shell_skill_ids",
   "instructions",
   "enabled",
   "description"
@@ -43,6 +50,47 @@
    "in_list_view": 1,
    "label": "Model",
    "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_shell",
+   "fieldtype": "Check",
+   "label": "Enable Hosted Shell"
+  },
+  {
+   "fieldname": "api_base_url_override",
+   "fieldtype": "Data",
+   "label": "API Base URL Override"
+  },
+  {
+   "fieldname": "shell_container_id",
+   "fieldtype": "Data",
+   "label": "Hosted Shell Container ID"
+  },
+  {
+   "default": "1g",
+   "fieldname": "shell_memory_limit",
+   "fieldtype": "Select",
+   "label": "Hosted Shell Memory Limit",
+   "options": "1g\n4g\n16g\n64g"
+  },
+  {
+   "default": "0",
+   "fieldname": "shell_network_enabled",
+   "fieldtype": "Check",
+   "label": "Enable Hosted Shell Network"
+  },
+  {
+   "description": "One domain per line. Defaults to the active site hostname when empty.",
+   "fieldname": "shell_allowed_domains",
+   "fieldtype": "Small Text",
+   "label": "Hosted Shell Allowed Domains"
+  },
+  {
+   "description": "One OpenAI skill ID per line.",
+   "fieldname": "shell_skill_ids",
+   "fieldtype": "Small Text",
+   "label": "Hosted Shell Skill IDs"
   },
   {
    "fieldname": "instructions",
