@@ -25,6 +25,7 @@ import chatkit.server as chatkit_server
 from chatkit.server import ChatKitServer, CustomStreamError, NonStreamingResult
 from chatkit.types import (
 	Action,
+	CustomTask,
 	NoticeEvent,
 	ProgressUpdateEvent,
 	SyncCustomActionResponse,
@@ -615,7 +616,7 @@ async def _stream_agent_response_with_shell_progress(
 				if run_item.type == "tool_call_item" and raw_type in SHELL_TOOL_CALL_TYPES:
 					call_id = _get_raw_item_value(raw_item, "call_id") or _get_raw_item_value(raw_item, "id")
 					workflow_item = ensure_shell_workflow()
-					task = chatkit_agents.CustomTask(
+					task = CustomTask(
 						title=run_item.title or "Hosted shell",
 						content=_summarize_shell_tool_call(raw_item),
 						status_indicator="loading",
