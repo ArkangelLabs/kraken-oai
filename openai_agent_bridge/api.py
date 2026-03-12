@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from typing import Any
 
@@ -9,6 +10,12 @@ from frappe import _
 from werkzeug.wrappers import Response
 
 from openai_agent_bridge.chatkit import build_chatkit_response, debug_chatkit_probe
+
+
+DEFAULT_CHATKIT_DOMAIN_KEY = "domain_pk_69ab0f58e25881938658c48e368ec0500a2c5f59ab572a55"
+DEFAULT_CHATKIT_DOMAIN_KEYS_BY_HOST = {
+	"greenfoot-energy.mythril.cloud": "domain_pk_69b175acc8b08197b7e0bac2dbfa5be90ffebc9c4a915d42",
+}
 
 
 def _is_system_manager(user: str) -> bool:
@@ -67,14 +74,78 @@ def _can_edit_agent_instructions(user: str, agent_name: str) -> bool:
 	)
 
 
-def _get_chatkit_domain_key() -> str | None:
+def _get_request_host() -> str | None:
+	request = getattr(frappe.local, "request", None)
+	if not request or not getattr(request, "host", None):
+		return None
+	return str(request.host).split(":", 1)[0].strip().lower() or None
+
+
+def _coerce_chatkit_domain_key_map(value: Any) -> dict[str, str]:
+	if not value:
+		return {}
+
+	if isinstance(value, dict):
+		return {
+			str(host).strip().lower(): str(key).strip()
+			for host, key in value.items()
+			if host and key
+		}
+
+	if isinstance(value, str):
+		parsed: Any = None
+		try:
+			parsed = json.loads(value)
+		except json.JSONDecodeError:
+			parsed = None
+
+		if isinstance(parsed, dict):
+			return _coerce_chatkit_domain_key_map(parsed)
+
+		mapping: dict[str, str] = {}
+		for raw_line in value.replace(",", "\n").splitlines():
+			line = raw_line.strip()
+			if not line or "=" not in line:
+				continue
+			host, key = line.split("=", 1)
+			host = host.strip().lower()
+			key = key.strip()
+			if host and key:
+				mapping[host] = key
+		return mapping
+
+	return {}
+
+
+def _get_chatkit_domain_key_map() -> dict[str, str]:
+	config_map = _coerce_chatkit_domain_key_map(
+		frappe.conf.get("openai_chatkit_domain_keys")
+		or frappe.conf.get("openai_agent_chatkit_domain_keys")
+		or os.environ.get("OPENAI_CHATKIT_DOMAIN_KEYS")
+		or os.environ.get("OPENAI_AGENT_CHATKIT_DOMAIN_KEYS")
+	)
+	if config_map:
+		return config_map
+	return DEFAULT_CHATKIT_DOMAIN_KEYS_BY_HOST
+
+
+def _get_default_chatkit_domain_key() -> str | None:
 	return (
 		frappe.conf.get("openai_chatkit_domain_key")
 		or frappe.conf.get("openai_agent_chatkit_domain_key")
 		or os.environ.get("OPENAI_CHATKIT_DOMAIN_KEY")
 		or os.environ.get("OPENAI_AGENT_CHATKIT_DOMAIN_KEY")
-		or "domain_pk_69ab0f58e25881938658c48e368ec0500a2c5f59ab572a55"
+		or DEFAULT_CHATKIT_DOMAIN_KEY
 	)
+
+
+def _get_chatkit_domain_key() -> str | None:
+	request_host = _get_request_host()
+	if request_host:
+		domain_key = _get_chatkit_domain_key_map().get(request_host)
+		if domain_key:
+			return domain_key
+	return _get_default_chatkit_domain_key()
 
 
 @frappe.whitelist()
