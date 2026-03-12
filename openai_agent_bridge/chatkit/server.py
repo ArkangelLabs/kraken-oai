@@ -22,11 +22,8 @@ import chatkit.server as chatkit_server
 from chatkit.server import ChatKitServer, CustomStreamError, NonStreamingResult
 from chatkit.types import (
 	Action,
-	AssistantMessageContent,
-	AssistantMessageItem,
 	NoticeEvent,
 	SyncCustomActionResponse,
-	ThreadItemDoneEvent,
 	ThreadMetadata,
 	UserMessageItem,
 	WidgetItem,
@@ -524,7 +521,7 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 				max_turns=MAX_AGENT_TURNS,
 				run_config=run_config,
 			)
-			async for event in self._stream_text_responses(thread, result):
+			async for event in stream_agent_response(agent_context, result):
 				yield event
 		except CustomStreamError:
 			raise
@@ -537,36 +534,6 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 		finally:
 			for server in reversed(locals().get("mcp_servers", [])):
 				await server.cleanup()
-
-	async def _stream_text_responses(self, thread: ThreadMetadata, result) -> AsyncIterator[Any]:
-		async for event in result.stream_events():
-			if getattr(event, "type", None) != "raw_response_event":
-				continue
-
-			data = event.data
-			if getattr(data, "type", None) != "response.output_item.done":
-				continue
-
-			item = data.item
-			if getattr(item, "type", None) != "message" or getattr(item, "role", None) != "assistant":
-				continue
-
-			content = [
-				AssistantMessageContent(text=part.text, annotations=[])
-				for part in getattr(item, "content", [])
-				if getattr(part, "type", None) == "output_text" and getattr(part, "text", "")
-			]
-			if not content:
-				continue
-
-			yield ThreadItemDoneEvent(
-				item=AssistantMessageItem(
-					id=item.id,
-					thread_id=thread.id,
-					created_at=frappe.utils.now_datetime(),
-					content=content,
-				)
-			)
 
 	async def action(
 		self,
