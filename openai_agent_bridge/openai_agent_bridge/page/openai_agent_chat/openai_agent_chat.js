@@ -37,6 +37,28 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 		this.loadAgents();
 	}
 
+	buildTheme() {
+		const rootStyles = getComputedStyle(document.documentElement);
+		const surfaceBackground =
+			rootStyles.getPropertyValue("--bg-color").trim() ||
+			rootStyles.getPropertyValue("--gray-100").trim() ||
+			"#f8f7f4";
+		const surfaceForeground =
+			rootStyles.getPropertyValue("--gray-900").trim() ||
+			rootStyles.getPropertyValue("--text-color").trim() ||
+			"#1a1f2e";
+
+		return {
+			radius: "soft",
+			color: {
+				surface: {
+					background: surfaceBackground,
+					foreground: surfaceForeground,
+				},
+			},
+		};
+	}
+
 	injectStyle() {
 		if (document.getElementById("openai-agent-chat-style")) {
 			return;
@@ -138,9 +160,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 							},
 						}),
 				},
-				theme: {
-					radius: "soft",
-				},
+				theme: this.buildTheme(),
 			});
 
 			this.currentAgent = agentName;
