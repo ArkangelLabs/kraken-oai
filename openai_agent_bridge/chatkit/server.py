@@ -4,7 +4,6 @@ import asyncio
 import base64
 import io
 import os
-import socket
 import traceback
 import zipfile
 from contextlib import contextmanager
@@ -128,21 +127,6 @@ def _get_api_base_url(agent_doc) -> str:
 	return get_url().rstrip("/")
 
 
-def _get_shell_resolve_override(api_base_url: str) -> tuple[str, int, str] | None:
-	parsed = urlparse(api_base_url)
-	hostname = (parsed.hostname or "").strip()
-	if not hostname:
-		return None
-
-	port = parsed.port or (443 if parsed.scheme == "https" else 80)
-	try:
-		resolved_ip = socket.gethostbyname(hostname)
-	except OSError:
-		return None
-
-	return hostname, port, resolved_ip
-
-
 def _split_lines(value: str | None) -> list[str]:
 	return [line.strip() for line in (value or "").splitlines() if line.strip()]
 
@@ -200,26 +184,45 @@ class EffectiveMCPConfig:
 	headers: dict[str, str]
 
 
-def _get_shell_auth_headers(user: str) -> dict[str, str]:
-	profile = _get_mcp_profile(user)
-	if profile:
-		return _build_auth_headers(profile)
-	return _get_user_api_auth_headers(user)
+def _get_user_api_credentials(user: str) -> tuple[str, str]:
+	user_doc = frappe.get_doc("User", user)
+	updated = False
+	if not user_doc.api_key:
+		user_doc.api_key = frappe.generate_hash(length=15)
+		updated = True
+	if not user_doc.get_password("api_secret", raise_exception=False):
+		user_doc.api_secret = frappe.generate_hash(length=15)
+		updated = True
+	if updated:
+		user_doc.save(ignore_permissions=True)
+		frappe.db.commit()
+
+	api_secret = user_doc.get_password("api_secret", raise_exception=False)
+	if not user_doc.api_key or not api_secret:
+		frappe.throw(f"Unable to provision API credentials for {user}.")
+
+	return user_doc.api_key, api_secret
+
+
+def _get_shell_domain_secrets(agent_doc, user: str) -> list[dict[str, str]]:
+	api_key, api_secret = _get_user_api_credentials(user)
+	secrets = [
+		{
+			"domain": domain,
+			"name": "FRAPPE_AUTH",
+			"value": f"Token {api_key}:{api_secret}",
+		}
+		for domain in _get_shell_allowed_domains(agent_doc)
+	]
+	return secrets
 
 
 def _build_shell_skill_bundle(agent_doc, user: str) -> dict[str, str]:
 	skill_name = "riley-frappe-api"
 	skill_description = "Hosted shell instructions for querying the active Frappe site."
 	api_base_url = _get_api_base_url(agent_doc)
-	resolve_override = _get_shell_resolve_override(api_base_url)
-	resolve_args = ""
-	if resolve_override:
-		resolve_host, resolve_port, resolve_ip = resolve_override
-		resolve_args = f"--resolve {resolve_host}:{resolve_port}:{resolve_ip}"
 	user_name = _get_user_display_name(user)
 	company_name = _get_company_name(user)
-	auth_headers = _get_shell_auth_headers(user)
-	auth_value = auth_headers.get("Authorization", "")
 	skill_body = f"""---
 name: "{skill_name}"
 description: "{skill_description}"
@@ -246,25 +249,27 @@ Use shell with `curl` to inspect DocTypes and query data. Always answer from liv
 
 ```bash
 export FRAPPE_BASE_URL="{api_base_url}"
-export FRAPPE_AUTH='{auth_value}'
 export JSON_HEADER="Accept: application/json"
-export FRAPPE_CURL_RESOLVE='{resolve_args}'
 ```
 
-If `FRAPPE_CURL_RESOLVE` is set, include it in every `curl` command before the URL. This keeps the
-correct host header while bypassing DNS failures inside the hosted shell.
+The shell environment already provides a user-scoped `FRAPPE_AUTH` placeholder for
+approved requests. Never print it. Use it only in the `Authorization` header as:
+
+```bash
+-H "Authorization: $FRAPPE_AUTH"
+```
 
 ## Core API patterns
 
-curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/method/frappe.client.get_meta?doctype=Warranty%20Registration" \\
+curl -sS "$FRAPPE_BASE_URL/api/method/frappe.client.get_meta?doctype=Warranty%20Registration" \\
   -H "Authorization: $FRAPPE_AUTH" \\
   -H "$JSON_HEADER"
 
-curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration?fields=%5B%22name%22,%22serial%22,%22brand%22,%22install_date%22,%22processing_status%22%5D&limit_page_length=5" \\
+curl -sS "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration?fields=%5B%22name%22,%22serial%22,%22brand%22,%22install_date%22,%22processing_status%22%5D&limit_page_length=5" \\
   -H "Authorization: $FRAPPE_AUTH" \\
   -H "$JSON_HEADER"
 
-curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/method/frappe.client.get_count" \\
+curl -sS --get "$FRAPPE_BASE_URL/api/method/frappe.client.get_count" \\
   --data-urlencode "doctype=Warranty Registration" \\
   --data-urlencode 'filters={{"brand":"GE","processing_status":"Completed"}}' \\
   -H "Authorization: $FRAPPE_AUTH" \\
@@ -276,7 +281,7 @@ curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/method/frappe.client.g
 Find candidate DocTypes:
 
 ```bash
-curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/method/frappe.desk.search.search_link?doctype=DocType&txt=Warranty&page_length=20" \\
+curl -sS "$FRAPPE_BASE_URL/api/method/frappe.desk.search.search_link?doctype=DocType&txt=Warranty&page_length=20" \\
   -H "Authorization: $FRAPPE_AUTH" \\
   -H "$JSON_HEADER"
 ```
@@ -284,7 +289,7 @@ curl -sS $FRAPPE_CURL_RESOLVE "$FRAPPE_BASE_URL/api/method/frappe.desk.search.se
 Find an exact serial:
 
 ```bash
-curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
+curl -sS --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
   --data-urlencode 'fields=["name","serial","brand","install_date","processing_status"]' \\
   --data-urlencode 'filters=[["Warranty Registration","serial","=","ZS003292C"]]' \\
   --data-urlencode 'limit_page_length=1' \\
@@ -295,7 +300,7 @@ curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Re
 Find the closest serial by prefix when the user explicitly asks:
 
 ```bash
-curl -sS $FRAPPE_CURL_RESOLVE --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
+curl -sS --get "$FRAPPE_BASE_URL/api/resource/Warranty%20Registration" \\
   --data-urlencode 'fields=["name","serial","brand","install_date","processing_status"]' \\
   --data-urlencode 'filters=[["Warranty Registration","serial","like","ZS003292%"]]' \\
   --data-urlencode 'order_by=serial asc' \\
@@ -356,6 +361,7 @@ def _build_shell_tool(agent_doc, user: str) -> ShellTool:
 				environment["network_policy"] = {
 					"type": "allowlist",
 					"allowed_domains": allowed_domains,
+					"domain_secrets": _get_shell_domain_secrets(agent_doc, user),
 				}
 
 	return ShellTool(environment=environment)
@@ -379,26 +385,9 @@ def _get_default_mcp_transport() -> str:
 
 
 def _get_user_api_auth_headers(user: str) -> dict[str, str]:
-	user_doc = frappe.get_doc("User", user)
-	updated = False
-	if not user_doc.api_key:
-		user_doc.api_key = frappe.generate_hash(length=15)
-		updated = True
-	if not user_doc.get_password("api_secret", raise_exception=False):
-		user_doc.api_secret = frappe.generate_hash(length=15)
-		updated = True
-	if updated:
-		user_doc.save(ignore_permissions=True)
-		# The MCP request is made immediately after provisioning credentials.
-		# Commit first so the downstream authenticated request can see them.
-		frappe.db.commit()
-
-	api_secret = user_doc.get_password("api_secret", raise_exception=False)
-	if not user_doc.api_key or not api_secret:
-		frappe.throw(f"Unable to provision API credentials for {user}.")
-
+	api_key, api_secret = _get_user_api_credentials(user)
 	return {
-		"Authorization": f"token {user_doc.api_key}:{api_secret}",
+		"Authorization": f"token {api_key}:{api_secret}",
 		**_get_site_routing_headers(),
 	}
 
