@@ -17,16 +17,16 @@ from urllib.parse import urlparse
 import agents
 import frappe
 from frappe.utils import get_url
-from agents import Agent, OpenAIProvider, RunConfig, Runner, ShellTool
+from agents import Agent, ModelSettings, OpenAIProvider, RunConfig, Runner, ShellTool
 from agents.mcp import MCPServerSse, MCPServerStreamableHttp
 import chatkit.agents as chatkit_agents
 from chatkit.agents import AgentContext, simple_to_agent_input
 import chatkit.server as chatkit_server
 from chatkit.server import ChatKitServer, CustomStreamError, NonStreamingResult
+from openai.types.shared import Reasoning
 from chatkit.types import (
 	Action,
 	NoticeEvent,
-	ProgressUpdateEvent,
 	SyncCustomActionResponse,
 	ThreadMetadata,
 	UserMessageItem,
@@ -176,6 +176,13 @@ def _build_runtime_instructions(agent_doc, user: str) -> str:
 	if not agent_instructions:
 		return base_prompt
 	return f"{base_prompt}\n\n{agent_instructions}"
+
+
+def _build_agent_model_settings(agent_doc) -> ModelSettings:
+	return ModelSettings(
+		reasoning=Reasoning(effort="low"),
+		verbosity="low",
+	)
 
 
 @dataclass
@@ -519,6 +526,12 @@ def _summarize_shell_tool_output(raw_item: Any) -> str:
 	return "Hosted shell step completed"
 
 
+def _build_shell_workflow_summary(task_count: int) -> chatkit_agents.CustomSummary:
+	if task_count > 1:
+		return chatkit_agents.CustomSummary(title="Used hosted shell tools", icon="square-code")
+	return chatkit_agents.CustomSummary(title="Used the hosted shell", icon="square-code")
+
+
 async def _stream_agent_response_with_shell_progress(
 	context: AgentContext,
 	result,
@@ -560,7 +573,10 @@ async def _stream_agent_response_with_shell_progress(
 		delta = datetime.now() - item.created_at
 		duration = int(delta.total_seconds())
 		if item.workflow.summary is None:
-			item.workflow.summary = chatkit_agents.DurationSummary(duration=duration)
+			if item.workflow.type == "custom" and item.workflow.tasks:
+				item.workflow.summary = _build_shell_workflow_summary(len(item.workflow.tasks))
+			else:
+				item.workflow.summary = chatkit_agents.DurationSummary(duration=duration)
 		item.workflow.expanded = False
 		return chatkit_agents.ThreadItemDoneEvent(item=item)
 
@@ -613,8 +629,9 @@ async def _stream_agent_response_with_shell_progress(
 				if run_item.type == "tool_call_item" and raw_type in SHELL_TOOL_CALL_TYPES:
 					call_id = _get_raw_item_value(raw_item, "call_id") or _get_raw_item_value(raw_item, "id")
 					workflow_item = ensure_shell_workflow()
-					task = chatkit_agents.ThoughtTask(
-						title=run_item.title or "Hosted shell",
+					task = chatkit_agents.CustomTask(
+						title=run_item.title or "Using hosted shell",
+						icon="square-code",
 						content=_summarize_shell_tool_call(raw_item),
 						status_indicator="loading",
 					)
@@ -629,7 +646,6 @@ async def _stream_agent_response_with_shell_progress(
 							item_id=workflow_item.id,
 							update=chatkit_agents.WorkflowTaskAdded(task=task, task_index=task_index),
 						)
-					yield ProgressUpdateEvent(text=task.content or "Running hosted shell")
 					continue
 
 				if run_item.type == "tool_call_output_item" and raw_type in SHELL_TOOL_OUTPUT_TYPES:
@@ -643,13 +659,6 @@ async def _stream_agent_response_with_shell_progress(
 							item_id=shell_workflow_item.id,
 							update=chatkit_agents.WorkflowTaskUpdated(task=task, task_index=task_index),
 						)
-					yield ProgressUpdateEvent(
-						text=_summarize_shell_tool_output(raw_item)
-					)
-					continue
-
-				if run_name == "tool_output" and raw_type in SHELL_TOOL_OUTPUT_TYPES:
-					yield ProgressUpdateEvent(text=_summarize_shell_tool_output(raw_item))
 					continue
 
 				continue
@@ -900,6 +909,7 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 			name=agent_doc.agent_name,
 			model=agent_doc.model or "gpt-4.1",
 			instructions=_build_runtime_instructions(agent_doc, frappe.session.user),
+			model_settings=_build_agent_model_settings(agent_doc),
 			tools=tools,
 			mcp_servers=mcp_servers,
 		)
@@ -926,7 +936,11 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 			agent_context = AgentContext(thread=thread, store=self.store, request_context=context)
 			agent = self._build_agent(agent_doc, mcp_config)
 			run_config = RunConfig(
-				model_provider=OpenAIProvider(api_key=api_key, use_responses=True),
+				model_provider=OpenAIProvider(
+					api_key=api_key,
+					use_responses=True,
+					use_responses_websocket=True,
+				),
 				tracing_disabled=True,
 				workflow_name=agent_doc.agent_name,
 				group_id=thread.id,
@@ -1002,7 +1016,11 @@ async def debug_chatkit_probe(agent_name: str, user: str) -> dict[str, Any]:
 	await store.save_thread(thread, context)
 	agent = FrappeChatKitServer()._build_agent(agent_doc, mcp_config)
 	run_config = RunConfig(
-		model_provider=OpenAIProvider(api_key=api_key, use_responses=True),
+		model_provider=OpenAIProvider(
+			api_key=api_key,
+			use_responses=True,
+			use_responses_websocket=True,
+		),
 		tracing_disabled=True,
 		workflow_name=agent_doc.agent_name,
 		group_id="debug-probe-thread",
