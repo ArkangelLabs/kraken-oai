@@ -6,8 +6,10 @@ import io
 import os
 import traceback
 import zipfile
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
 from urllib.parse import urlparse
@@ -17,12 +19,14 @@ import frappe
 from frappe.utils import get_url
 from agents import Agent, OpenAIProvider, RunConfig, Runner, ShellTool
 from agents.mcp import MCPServerSse, MCPServerStreamableHttp
-from chatkit.agents import AgentContext, simple_to_agent_input, stream_agent_response
+import chatkit.agents as chatkit_agents
+from chatkit.agents import AgentContext, simple_to_agent_input
 import chatkit.server as chatkit_server
 from chatkit.server import ChatKitServer, CustomStreamError, NonStreamingResult
 from chatkit.types import (
 	Action,
 	NoticeEvent,
+	ProgressUpdateEvent,
 	SyncCustomActionResponse,
 	ThreadMetadata,
 	UserMessageItem,
@@ -33,6 +37,8 @@ from werkzeug.wrappers import Response
 from .store import FrappeChatKitStore
 
 MAX_AGENT_TURNS = 20
+SHELL_TOOL_CALL_TYPES = {"shell_call", "apply_patch_call", "hosted_tool_call", "local_shell_call"}
+SHELL_TOOL_OUTPUT_TYPES = {"shell_call_output", "apply_patch_call_output", "local_shell_call_output"}
 
 
 _original_chatkit_logger_exception = chatkit_server.logger.exception
@@ -453,6 +459,424 @@ def _iter_async(async_iterable: AsyncIterator[bytes]) -> Iterator[bytes]:
 		loop.close()
 
 
+def _get_raw_item_type(raw_item: Any) -> str | None:
+	if isinstance(raw_item, dict):
+		return raw_item.get("type")
+	return getattr(raw_item, "type", None)
+
+
+def _get_raw_item_value(raw_item: Any, key: str) -> Any:
+	if isinstance(raw_item, dict):
+		return raw_item.get(key)
+	return getattr(raw_item, key, None)
+
+
+def _summarize_shell_tool_call(raw_item: Any) -> str:
+	action = _get_raw_item_value(raw_item, "action")
+	if isinstance(action, dict):
+		commands = action.get("commands") or []
+	else:
+		commands = getattr(action, "commands", []) or []
+
+	first_command = ""
+	if isinstance(commands, list) and commands:
+		first_command = str(commands[0]).replace("\n", " ").strip()
+
+	if "frappe.client.get_count" in first_command:
+		return "Querying an exact count from the Frappe API"
+	if "frappe.client.get_meta" in first_command:
+		return "Inspecting the DocType schema"
+	if "/api/resource/Warranty%20Registration" in first_command or "/api/resource/Warranty Registration" in first_command:
+		return "Querying Warranty Registration records"
+	if "frappe.desk.search.search_link" in first_command:
+		return "Searching available DocTypes"
+	if "curl" in first_command:
+		return "Calling the Frappe HTTP API from hosted shell"
+	return "Running a hosted shell step"
+
+
+def _summarize_shell_tool_output(raw_item: Any) -> str:
+	outputs = _get_raw_item_value(raw_item, "output")
+	if not isinstance(outputs, list):
+		return "Hosted shell step completed"
+
+	for output in outputs:
+		if not isinstance(output, dict):
+			continue
+
+		stdout = str(output.get("stdout") or "").strip()
+		stderr = str(output.get("stderr") or "").strip()
+		if stdout.startswith("{") and stdout.endswith("}"):
+			try:
+				payload = frappe.parse_json(stdout)
+			except Exception:
+				payload = None
+			if isinstance(payload, dict) and "message" in payload:
+				return f"Hosted shell returned {payload['message']}"
+		if stdout:
+			return "Hosted shell step completed"
+		if stderr:
+			return "Hosted shell step completed with stderr output"
+
+	return "Hosted shell step completed"
+
+
+async def _stream_agent_response_with_shell_progress(
+	context: AgentContext,
+	result,
+	*,
+	converter=chatkit_agents._DEFAULT_RESPONSE_STREAM_CONVERTER,
+) -> AsyncIterator[Any]:
+	current_item_id = None
+	current_tool_call = None
+	ctx = context
+	thread = context.thread
+	queue_iterator = chatkit_agents._AsyncQueueIterator(context._events)
+	produced_items: set[str] = set()
+	streaming_thought = None
+	item_annotation_count: defaultdict[str, defaultdict[int, int]] = defaultdict(
+		lambda: defaultdict(int)
+	)
+	shell_workflow_item = None
+	shell_task_index_by_call_id: dict[str, int] = {}
+
+	items = await context.store.load_thread_items(
+		thread.id, None, 2, "desc", context.request_context
+	)
+	last_item = items.data[0] if len(items.data) > 0 else None
+	second_last_item = items.data[1] if len(items.data) > 1 else None
+
+	if last_item and last_item.type == "workflow":
+		ctx.workflow_item = last_item
+	elif (
+		last_item
+		and last_item.type == "client_tool_call"
+		and second_last_item
+		and second_last_item.type == "workflow"
+	):
+		ctx.workflow_item = second_last_item
+
+	def end_workflow(item):
+		if item == ctx.workflow_item:
+			ctx.workflow_item = None
+		delta = datetime.now() - item.created_at
+		duration = int(delta.total_seconds())
+		if item.workflow.summary is None:
+			item.workflow.summary = chatkit_agents.DurationSummary(duration=duration)
+		item.workflow.expanded = False
+		return chatkit_agents.ThreadItemDoneEvent(item=item)
+
+	def ensure_shell_workflow():
+		nonlocal shell_workflow_item
+		if shell_workflow_item:
+			return shell_workflow_item
+		shell_workflow_item = chatkit_agents.WorkflowItem(
+			id=ctx.generate_id("workflow"),
+			created_at=datetime.now(),
+			workflow=chatkit_agents.Workflow(type="custom", tasks=[], expanded=True),
+			thread_id=thread.id,
+		)
+		produced_items.add(shell_workflow_item.id)
+		return shell_workflow_item
+
+	try:
+		async for event in chatkit_agents._merge_generators(result.stream_events(), queue_iterator):
+			if isinstance(event, chatkit_agents._EventWrapper):
+				event = event.event
+				if event.type in {"thread.item.added", "thread.item.done"}:
+					if (
+						ctx.workflow_item
+						and ctx.workflow_item.id != event.item.id
+						and event.item.type != "client_tool_call"
+						and event.item.type != "hidden_context_item"
+					):
+						yield end_workflow(ctx.workflow_item)
+
+					if event.type == "thread.item.added" and event.item.type == "workflow":
+						ctx.workflow_item = event.item
+
+					produced_items.add(event.item.id)
+				yield event
+				continue
+
+			if event.type == "run_item_stream_event":
+				run_name = getattr(event, "name", None)
+				run_item = event.item
+				raw_item = getattr(run_item, "raw_item", None)
+				raw_type = _get_raw_item_type(raw_item)
+
+				if run_item.type == "tool_call_item" and raw_type == "function_call":
+					current_tool_call = getattr(raw_item, "call_id", None)
+					current_item_id = getattr(raw_item, "id", None)
+					if current_item_id:
+						produced_items.add(current_item_id)
+					continue
+
+				if run_item.type == "tool_call_item" and raw_type in SHELL_TOOL_CALL_TYPES:
+					call_id = _get_raw_item_value(raw_item, "call_id") or _get_raw_item_value(raw_item, "id")
+					workflow_item = ensure_shell_workflow()
+					task = chatkit_agents.CustomTask(
+						title=run_item.title or "Hosted shell",
+						content=_summarize_shell_tool_call(raw_item),
+						status_indicator="loading",
+					)
+					workflow_item.workflow.tasks.append(task)
+					task_index = len(workflow_item.workflow.tasks) - 1
+					if call_id:
+						shell_task_index_by_call_id[str(call_id)] = task_index
+					if len(workflow_item.workflow.tasks) == 1:
+						yield chatkit_agents.ThreadItemAddedEvent(item=workflow_item)
+					else:
+						yield chatkit_agents.ThreadItemUpdatedEvent(
+							item_id=workflow_item.id,
+							update=chatkit_agents.WorkflowTaskAdded(task=task, task_index=task_index),
+						)
+					yield ProgressUpdateEvent(text=task.content or "Running hosted shell")
+					continue
+
+				if run_item.type == "tool_call_output_item" and raw_type in SHELL_TOOL_OUTPUT_TYPES:
+					call_id = _get_raw_item_value(raw_item, "call_id")
+					task_index = shell_task_index_by_call_id.get(str(call_id)) if call_id else None
+					if shell_workflow_item and task_index is not None:
+						task = shell_workflow_item.workflow.tasks[task_index]
+						task.status_indicator = "complete"
+						task.content = _summarize_shell_tool_output(raw_item)
+						yield chatkit_agents.ThreadItemUpdatedEvent(
+							item_id=shell_workflow_item.id,
+							update=chatkit_agents.WorkflowTaskUpdated(task=task, task_index=task_index),
+						)
+					yield ProgressUpdateEvent(
+						text=_summarize_shell_tool_output(raw_item)
+					)
+					continue
+
+				if run_name == "tool_output" and raw_type in SHELL_TOOL_OUTPUT_TYPES:
+					yield ProgressUpdateEvent(text=_summarize_shell_tool_output(raw_item))
+					continue
+
+				continue
+
+			if event.type != "raw_response_event":
+				continue
+
+			event = event.data
+			if event.type == "response.content_part.added":
+				if event.part.type == "reasoning_text":
+					continue
+				content = await chatkit_agents._convert_content(event.part, converter)
+				yield chatkit_agents.ThreadItemUpdatedEvent(
+					item_id=event.item_id,
+					update=chatkit_agents.AssistantMessageContentPartAdded(
+						content_index=event.content_index,
+						content=content,
+					),
+				)
+			elif event.type == "response.output_text.delta":
+				yield chatkit_agents.ThreadItemUpdatedEvent(
+					item_id=event.item_id,
+					update=chatkit_agents.AssistantMessageContentPartTextDelta(
+						content_index=event.content_index,
+						delta=event.delta,
+					),
+				)
+			elif event.type == "response.output_text.done":
+				yield chatkit_agents.ThreadItemUpdatedEvent(
+					item_id=event.item_id,
+					update=chatkit_agents.AssistantMessageContentPartDone(
+						content_index=event.content_index,
+						content=chatkit_agents.AssistantMessageContent(
+							text=event.text,
+							annotations=[],
+						),
+					),
+				)
+			elif event.type == "response.output_text.annotation.added":
+				annotation = await chatkit_agents._convert_annotation(event.annotation, converter)
+				if annotation:
+					annotation_index = item_annotation_count[event.item_id][event.content_index]
+					item_annotation_count[event.item_id][event.content_index] = annotation_index + 1
+					yield chatkit_agents.ThreadItemUpdatedEvent(
+						item_id=event.item_id,
+						update=chatkit_agents.AssistantMessageContentPartAnnotationAdded(
+							content_index=event.content_index,
+							annotation_index=annotation_index,
+							annotation=annotation,
+						),
+					)
+				continue
+			elif event.type == "response.output_item.added":
+				item = event.item
+				if item.type == "reasoning" and not ctx.workflow_item:
+					ctx.workflow_item = chatkit_agents.WorkflowItem(
+						id=ctx.generate_id("workflow"),
+						created_at=datetime.now(),
+						workflow=chatkit_agents.Workflow(type="reasoning", tasks=[]),
+						thread_id=thread.id,
+					)
+					produced_items.add(ctx.workflow_item.id)
+					yield chatkit_agents.ThreadItemAddedEvent(item=ctx.workflow_item)
+				if item.type == "message":
+					if ctx.workflow_item:
+						yield end_workflow(ctx.workflow_item)
+					if shell_workflow_item:
+						yield end_workflow(shell_workflow_item)
+						shell_workflow_item = None
+						shell_task_index_by_call_id.clear()
+					produced_items.add(item.id)
+					yield chatkit_agents.ThreadItemAddedEvent(
+						item=chatkit_agents.AssistantMessageItem(
+							id=item.id,
+							thread_id=thread.id,
+							content=[
+								await chatkit_agents._convert_content(c, converter)
+								for c in item.content
+							],
+							created_at=datetime.now(),
+						),
+					)
+				elif item.type == "image_generation_call":
+					ctx.generated_image_item = chatkit_agents.GeneratedImageItem(
+						id=ctx.generate_id("message"),
+						thread_id=thread.id,
+						created_at=datetime.now(),
+						image=None,
+					)
+					produced_items.add(ctx.generated_image_item.id)
+					yield chatkit_agents.ThreadItemAddedEvent(item=ctx.generated_image_item)
+			elif event.type == "response.image_generation_call.partial_image":
+				if not ctx.generated_image_item:
+					continue
+
+				url = await converter.base64_image_to_url(
+					image_id=event.item_id,
+					base64_image=event.partial_image_b64,
+					partial_image_index=event.partial_image_index,
+				)
+				progress = converter.partial_image_index_to_progress(event.partial_image_index)
+
+				ctx.generated_image_item.image = chatkit_agents.GeneratedImage(id=event.item_id, url=url)
+
+				yield chatkit_agents.ThreadItemUpdatedEvent(
+					item_id=ctx.generated_image_item.id,
+					update=chatkit_agents.GeneratedImageUpdated(
+						image=ctx.generated_image_item.image, progress=progress
+					),
+				)
+			elif event.type == "response.reasoning_summary_text.delta":
+				if not ctx.workflow_item:
+					continue
+
+				if ctx.workflow_item.workflow.type == "reasoning" and len(ctx.workflow_item.workflow.tasks) == 0:
+					streaming_thought = chatkit_agents.StreamingThoughtTracker(
+						item_id=event.item_id,
+						index=event.summary_index,
+						task=chatkit_agents.ThoughtTask(content=event.delta),
+					)
+					ctx.workflow_item.workflow.tasks.append(streaming_thought.task)
+					yield chatkit_agents.ThreadItemUpdatedEvent(
+						item_id=ctx.workflow_item.id,
+						update=chatkit_agents.WorkflowTaskAdded(task=streaming_thought.task, task_index=0),
+					)
+				elif (
+					streaming_thought
+					and streaming_thought.task in ctx.workflow_item.workflow.tasks
+					and event.item_id == streaming_thought.item_id
+					and event.summary_index == streaming_thought.index
+				):
+					streaming_thought.task.content += event.delta
+					yield chatkit_agents.ThreadItemUpdatedEvent(
+						item_id=ctx.workflow_item.id,
+						update=chatkit_agents.WorkflowTaskUpdated(
+							task=streaming_thought.task,
+							task_index=ctx.workflow_item.workflow.tasks.index(streaming_thought.task),
+						),
+					)
+			elif event.type == "response.reasoning_summary_text.done":
+				if ctx.workflow_item:
+					if (
+						streaming_thought
+						and streaming_thought.task in ctx.workflow_item.workflow.tasks
+						and event.item_id == streaming_thought.item_id
+						and event.summary_index == streaming_thought.index
+					):
+						task = streaming_thought.task
+						task.content = event.text
+						streaming_thought = None
+						update = chatkit_agents.WorkflowTaskUpdated(
+							task=task,
+							task_index=ctx.workflow_item.workflow.tasks.index(task),
+						)
+					else:
+						task = chatkit_agents.ThoughtTask(content=event.text)
+						ctx.workflow_item.workflow.tasks.append(task)
+						update = chatkit_agents.WorkflowTaskAdded(
+							task=task,
+							task_index=ctx.workflow_item.workflow.tasks.index(task),
+						)
+					yield chatkit_agents.ThreadItemUpdatedEvent(item_id=ctx.workflow_item.id, update=update)
+			elif event.type == "response.output_item.done":
+				item = event.item
+				if item.type == "message":
+					produced_items.add(item.id)
+					yield chatkit_agents.ThreadItemDoneEvent(
+						item=chatkit_agents.AssistantMessageItem(
+							id=item.id,
+							thread_id=thread.id,
+							content=[
+								await chatkit_agents._convert_content(c, converter)
+								for c in item.content
+							],
+							created_at=datetime.now(),
+						),
+					)
+				elif item.type == "image_generation_call" and item.result:
+					if not ctx.generated_image_item:
+						continue
+
+					url = await converter.base64_image_to_url(
+						image_id=item.id,
+						base64_image=item.result,
+					)
+					image = chatkit_agents.GeneratedImage(id=item.id, url=url)
+
+					ctx.generated_image_item.image = image
+					yield chatkit_agents.ThreadItemDoneEvent(item=ctx.generated_image_item)
+
+					ctx.generated_image_item = None
+
+	except (
+		chatkit_agents.InputGuardrailTripwireTriggered,
+		chatkit_agents.OutputGuardrailTripwireTriggered,
+	):
+		for item_id in produced_items:
+			yield chatkit_agents.ThreadItemRemovedEvent(item_id=item_id)
+
+		context._complete()
+		queue_iterator.drain_and_complete()
+		raise
+
+	context._complete()
+
+	async for event in queue_iterator:
+		yield event.event
+
+	if ctx.workflow_item:
+		await ctx.store.add_thread_item(thread.id, ctx.workflow_item, ctx.request_context)
+
+	if context.client_tool_call:
+		yield chatkit_agents.ThreadItemDoneEvent(
+			item=chatkit_agents.ClientToolCallItem(
+				id=current_item_id
+				or context.store.generate_item_id("tool_call", thread, context.request_context),
+				thread_id=thread.id,
+				name=context.client_tool_call.name,
+				arguments=context.client_tool_call.arguments,
+				created_at=datetime.now(),
+				call_id=current_tool_call
+				or context.store.generate_item_id("tool_call", thread, context.request_context),
+			),
+		)
+
 class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 	def __init__(self):
 		super().__init__(store=FrappeChatKitStore())
@@ -521,7 +945,7 @@ class FrappeChatKitServer(ChatKitServer[dict[str, Any]]):
 				max_turns=MAX_AGENT_TURNS,
 				run_config=run_config,
 			)
-			async for event in stream_agent_response(agent_context, result):
+			async for event in _stream_agent_response_with_shell_progress(agent_context, result):
 				yield event
 		except CustomStreamError:
 			raise
@@ -612,7 +1036,7 @@ async def debug_chatkit_probe(agent_name: str, user: str) -> dict[str, Any]:
 		)
 		converted_events = []
 		converted_context = AgentContext(thread=thread, store=store, request_context=context)
-		async for event in stream_agent_response(
+		async for event in _stream_agent_response_with_shell_progress(
 			converted_context,
 			converted_result,
 		):
