@@ -66,11 +66,18 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			"#1a1f2e";
 
 		return {
+			colorScheme: "light",
 			radius: "soft",
 			color: {
 				surface: {
 					background: surfaceBackground,
 					foreground: surfaceForeground,
+				},
+				// Keep ChatKit controls aligned with the warm Mythril neutral palette.
+				grayscale: {
+					hue: 42,
+					tint: 8,
+					shade: 0,
 				},
 			},
 		};
