@@ -49,6 +49,24 @@ def _get_default_agent_name(user: str) -> str | None:
 	)
 
 
+def _can_edit_agent_instructions(user: str, agent_name: str) -> bool:
+	if _is_system_manager(user):
+		return True
+
+	if user == "Guest":
+		return False
+
+	if "OpenAI Agent User" not in frappe.get_roles(user):
+		return False
+
+	return bool(
+		frappe.db.exists(
+			"OpenAI Agent Access",
+			{"user": user, "agent": agent_name, "enabled": 1},
+		)
+	)
+
+
 def _get_chatkit_domain_key() -> str | None:
 	return (
 		frappe.conf.get("openai_chatkit_domain_key")
@@ -81,6 +99,25 @@ def get_available_agents() -> list[dict[str, Any]]:
 			agent["chatkit_domain_key"] = domain_key
 
 	return agents
+
+
+@frappe.whitelist(methods=["POST"])
+def update_agent_instructions(agent_name: str, instructions: str | None = None) -> dict[str, Any]:
+	if frappe.session.user == "Guest":
+		frappe.throw(_("You must be logged in to update agent instructions."), frappe.PermissionError)
+
+	if not _can_edit_agent_instructions(frappe.session.user, agent_name):
+		frappe.throw(_("You do not have permission to edit these instructions."), frappe.PermissionError)
+
+	doc = frappe.get_doc("OpenAI Agent", agent_name)
+	doc.instructions = (instructions or "").strip()
+	doc.save(ignore_permissions=True)
+	frappe.clear_cache(doctype="OpenAI Agent")
+
+	return {
+		"name": doc.name,
+		"instructions": doc.instructions,
+	}
 
 
 @frappe.whitelist(methods=["POST"])
