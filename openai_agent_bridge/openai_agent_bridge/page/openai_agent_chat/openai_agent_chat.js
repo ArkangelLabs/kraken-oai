@@ -64,6 +64,10 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			rootStyles.getPropertyValue("--gray-900").trim() ||
 			rootStyles.getPropertyValue("--text-color").trim() ||
 			"#1a1f2e";
+		const composerBackground =
+			rootStyles.getPropertyValue("--subtle-fg").trim() ||
+			rootStyles.getPropertyValue("--card-bg").trim() ||
+			"#e8e6e1";
 
 		return {
 			colorScheme: "light",
@@ -73,12 +77,9 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 					background: surfaceBackground,
 					foreground: surfaceForeground,
 				},
-				// Keep ChatKit controls aligned with the warm Mythril neutral palette.
-				grayscale: {
-					hue: 42,
-					tint: 8,
-					shade: 0,
-				},
+			},
+			unsafeVariables: {
+				"--composer-background-color": composerBackground,
 			},
 		};
 	}
