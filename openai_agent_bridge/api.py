@@ -14,7 +14,8 @@ from openai_agent_bridge.chatkit import build_chatkit_response, debug_chatkit_pr
 
 DEFAULT_CHATKIT_DOMAIN_KEY = "domain_pk_69ab0f58e25881938658c48e368ec0500a2c5f59ab572a55"
 DEFAULT_CHATKIT_DOMAIN_KEYS_BY_HOST = {
-	"greenfoot-energy.mythril.cloud": "domain_pk_69b175acc8b08197b7e0bac2dbfa5be90ffebc9c4a915d42",
+	"greenfoot-energy.mythril.cloud": "domain_pk_69b2bc8bf7788190abf849760aec9a440338f2347883f82e",
+	"greenfoot.v.frappe.cloud": DEFAULT_CHATKIT_DOMAIN_KEY,
 }
 
 
@@ -72,13 +73,6 @@ def _can_edit_agent_instructions(user: str, agent_name: str) -> bool:
 			{"user": user, "agent": agent_name, "enabled": 1},
 		)
 	)
-
-
-def _get_request_host() -> str | None:
-	request = getattr(frappe.local, "request", None)
-	if not request or not getattr(request, "host", None):
-		return None
-	return str(request.host).split(":", 1)[0].strip().lower() or None
 
 
 def _coerce_chatkit_domain_key_map(value: Any) -> dict[str, str]:
@@ -139,15 +133,6 @@ def _get_default_chatkit_domain_key() -> str | None:
 	)
 
 
-def _get_chatkit_domain_key() -> str | None:
-	request_host = _get_request_host()
-	if request_host:
-		domain_key = _get_chatkit_domain_key_map().get(request_host)
-		if domain_key:
-			return domain_key
-	return _get_default_chatkit_domain_key()
-
-
 @frappe.whitelist()
 def get_available_agents() -> list[dict[str, Any]]:
 	if frappe.session.user == "Guest":
@@ -164,10 +149,12 @@ def get_available_agents() -> list[dict[str, Any]]:
 		order_by="agent_name asc",
 	)
 
-	domain_key = _get_chatkit_domain_key()
-	if domain_key:
-		for agent in agents:
-			agent["chatkit_domain_key"] = domain_key
+	domain_keys = _get_chatkit_domain_key_map()
+	default_domain_key = _get_default_chatkit_domain_key()
+	for agent in agents:
+		agent["chatkit_domain_keys"] = domain_keys
+		if default_domain_key:
+			agent["default_chatkit_domain_key"] = default_domain_key
 
 	return agents
 

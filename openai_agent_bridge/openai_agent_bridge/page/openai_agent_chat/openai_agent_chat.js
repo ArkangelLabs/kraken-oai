@@ -2,7 +2,8 @@ frappe.provide("openai_agent_bridge");
 
 const DEFAULT_CHATKIT_DOMAIN_KEY = "domain_pk_69ab0f58e25881938658c48e368ec0500a2c5f59ab572a55";
 const CHATKIT_DOMAIN_KEYS_BY_HOST = {
-	"greenfoot-energy.mythril.cloud": "domain_pk_69b175acc8b08197b7e0bac2dbfa5be90ffebc9c4a915d42",
+	"greenfoot-energy.mythril.cloud": "domain_pk_69b2bc8bf7788190abf849760aec9a440338f2347883f82e",
+	"greenfoot.v.frappe.cloud": DEFAULT_CHATKIT_DOMAIN_KEY,
 };
 
 frappe.pages["openai-agent-chat"].on_page_load = function (wrapper) {
@@ -16,6 +17,8 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 		this.currentAgent = null;
 		this.agentName = null;
 		this.chatkitDomainKey = null;
+		this.chatkitDomainKeys = { ...CHATKIT_DOMAIN_KEYS_BY_HOST };
+		this.defaultChatkitDomainKey = DEFAULT_CHATKIT_DOMAIN_KEY;
 		this.make();
 	}
 
@@ -40,8 +43,15 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 		this.loadAgents();
 	}
 
-	getFallbackDomainKey() {
-		return CHATKIT_DOMAIN_KEYS_BY_HOST[window.location.host] || DEFAULT_CHATKIT_DOMAIN_KEY;
+	getResolvedDomainKey() {
+		const host = window.location.host;
+		const configuredHosts = Object.keys(this.chatkitDomainKeys || {});
+
+		if (configuredHosts.length) {
+			return this.chatkitDomainKeys[host] || null;
+		}
+
+		return this.defaultChatkitDomainKey || DEFAULT_CHATKIT_DOMAIN_KEY;
 	}
 
 	buildTheme() {
@@ -127,7 +137,22 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			}
 
 			this.agentName = agents[0].name;
-			this.chatkitDomainKey = agents[0].chatkit_domain_key || this.getFallbackDomainKey();
+			this.chatkitDomainKeys = {
+				...CHATKIT_DOMAIN_KEYS_BY_HOST,
+				...(agents[0].chatkit_domain_keys || {}),
+			};
+			this.defaultChatkitDomainKey =
+				agents[0].default_chatkit_domain_key || DEFAULT_CHATKIT_DOMAIN_KEY;
+			this.chatkitDomainKey = this.getResolvedDomainKey();
+			if (!this.chatkitDomainKey) {
+				this.showUnavailableState(
+					__(
+						"Riley Assistant is not configured for this site host. Ask a System Manager to add a ChatKit domain key for {0}.",
+						[window.location.host]
+					)
+				);
+				return;
+			}
 			await this.mountChat(this.agentName);
 		} catch (error) {
 			this.showUnavailableState(__("Unable to load agents."));
@@ -156,7 +181,7 @@ openai_agent_bridge.OpenAIAgentChatPage = class OpenAIAgentChatPage {
 			chatElement.setOptions({
 				api: {
 					url: "/api/method/openai_agent_bridge.api.chatkit",
-					domainKey: this.chatkitDomainKey || this.getFallbackDomainKey(),
+					domainKey: this.chatkitDomainKey,
 					fetch: (input, init = {}) =>
 						window.fetch(input, {
 							...init,
