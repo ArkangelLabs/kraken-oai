@@ -95,7 +95,8 @@
   {
    "fieldname": "instructions",
    "fieldtype": "Text Editor",
-   "label": "Instructions"
+   "label": "Instructions",
+   "permlevel": 1
   },
   {
    "default": "1",
@@ -135,6 +136,12 @@
    "read": 1,
    "report": 1,
    "role": "OpenAI Agent User"
+  },
+  {
+   "permlevel": 1,
+   "read": 1,
+   "role": "OpenAI Agent User",
+   "write": 1
   }
  ],
  "quick_entry": 1,

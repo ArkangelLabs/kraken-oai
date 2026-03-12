@@ -173,8 +173,6 @@ def _build_runtime_instructions(agent_doc, user: str) -> str:
 		)
 
 	agent_instructions = (agent_doc.instructions or agent_doc.description or "").strip()
-	if shell_enabled:
-		return base_prompt
 	if not agent_instructions:
 		return base_prompt
 	return f"{base_prompt}\n\n{agent_instructions}"
